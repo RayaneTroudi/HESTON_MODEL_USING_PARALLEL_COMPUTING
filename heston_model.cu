@@ -41,11 +41,11 @@ __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, 
     for (int i = 0; i < N; i++)
     {
         G = curand_normal2(&localState);
-        V = fmaxf(V + kappa * (theta - V) * dt + sigma * sqrt(V) * sqrt(dt) * G.x , 0.0f);
-        S = S * ( 1.0f + r * dt + sqrt(V) * sqrt(dt) * ( rho * G.x + sqrt(1-pow(rho,2)) * G.y ));
+        V = fmaxf(V + kappa * (theta - V) * dt + sigma * sqrtf(V) * sqrtf(dt) * G.x , 0.0f);
+        S = S * ( 1.0f + r * dt + sqrtf(V) * sqrt(dt) * ( rho * G.x + sqrtf(1-rho*rho) * G.y ));
     }
 
-    payoffGPU[idx] = expf(-r * dt * dt * N) * fmaxf(0.0f, S - K);
+    payoffGPU[idx] = expf(-r * N * dt) * fmaxf(0.0f, S - K);
 
     state[idx] = localState;
     
@@ -60,23 +60,23 @@ int main(void){
     int n = NB * NTPB;
 
     float T = 1.0f; // maturity
-    float S0 = 50.0f; 
+    float S0 = 1.0f; 
     float K = S0; // at the money
 
-    int N = 100;
-    float dt = 1.0f / 1000.0f ;
+    int N = 1000;
+    float dt = (float) T / (float) N; ;
 
     float sigma = 0.3f;
     float kappa = 0.5f;
     float theta = 0.1f;
-    float r = 0.024f;
-    float rho = 1.0;
+    float r = 0.0f;
+    float rho = -0.7f;
 
     float sum = 0.0f;
     float sum2 = 0.0f;
 
     float *payoffGPU, *payoffCPU;
-    printf("%s \n","ntm");
+
 
     // init of the array that contains all the payoff from each path generated
     payoffCPU = (float*)malloc(n * sizeof(float));
@@ -119,7 +119,7 @@ int main(void){
     }
 
     printf("The estimated price is equal to %f\n", sum);
-
+    printf("Execution time %f ms\n", Tim);
     // free the memory
     free(payoffCPU);
     testCUDA(cudaFree(payoffGPU));
