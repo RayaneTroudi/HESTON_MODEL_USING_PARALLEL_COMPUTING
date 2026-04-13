@@ -24,7 +24,7 @@ __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, 
                                 float dt, int N, // parameters of the discritisation (time step and maturity)
                                 float K, float S0, // paramater of the option (Strike)
                                 curandState* state, // array of seed of each thread
-                                float* payOffGPU){ // output
+                                float* payoffGPU){ // output
 
     // ___ INIT BLOCK ___
     int idx = blockDim.x * blockIdx.x + threadIdx.x;  
@@ -39,13 +39,13 @@ __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, 
     for (int i = 0; i < N; i++)
     {
         G = curand_normal2(&localState);
-        V = max(V + kappa * (theta - V) * dt + sigma * sqrt(V) * sqrt(dt) * G.x , 0.0f);
+        V = fmaxf(V + kappa * (theta - V) * dt + sigma * sqrt(V) * sqrt(dt) * G.x , 0.0f);
         S = S * ( 1.0f + r * dt + sqrt(V) * sqrt(dt) * ( rho * G.x + sqrt(1-pow(rho,2)) * G.y ));
     }
 
-    
-    
+    payoffGPU[idx] = expf(-r * dt * dt * N) * fmaxf(0.0f, S - K);
 
+    state[idx] = localState;
     
 }
 
