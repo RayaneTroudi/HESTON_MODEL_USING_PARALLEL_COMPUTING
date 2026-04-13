@@ -17,8 +17,10 @@ __global__ void init_curand_state_k(curandState* state) {
     curand_init(1234, idx, 0, &state[idx]);
 }
 
+
+
 // function to return an array that contains all the payoff at the maturity (N)
-__global__ void MC_heston_model(float k, float theta, float sigma, // paramaters of the model
+__global__ void MC_heston_model(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
                                 float dt, int N, // parameters of the discritisation (time step and maturity)
                                 float K, float S0, // paramater of the option (Strike)
                                 curandState* state, // array of seed of each thread
@@ -29,7 +31,7 @@ __global__ void MC_heston_model(float k, float theta, float sigma, // paramaters
     curandState localState = state[idx]; 
     float2 G; // Contains G1 and G2 (that we need for Heston Model)    
     float S = S0; // init of the first value of the path
-    float v0 = 0.1f; // init of the first value of the vol
+    float V = 0.1f; // init of the first value of the vol
 
 
 
@@ -37,7 +39,11 @@ __global__ void MC_heston_model(float k, float theta, float sigma, // paramaters
     for (int i = 0; i < N; i++)
     {
         G = curand_normal2(&localState);
+        V = max(V + kappa * (theta - V) * dt + sigma * sqrt(V) * sqrt(dt) * G.x , 0.0f);
+        S = S * ( 1.0f + r * dt + sqrt(V) * sqrt(dt) * ( rho * G.x + sqrt(1-pow(rho,2)) * G.y ));
     }
+
+    
     
 
     
