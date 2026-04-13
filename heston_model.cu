@@ -16,3 +16,20 @@ __global__ void init_curand_state_k(curandState* state) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curand_init(1234, idx, 0, &state[idx]);
 }
+
+__global__ void MC_heston_model(float k, float theta, float sigma,
+                                float dt, int N,
+                                float K,
+                                curandState* state,
+                                float* payOffGPU){
+
+
+
+}
+
+
+int main(void){
+
+
+    return 0;
+}
