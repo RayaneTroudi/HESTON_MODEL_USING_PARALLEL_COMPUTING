@@ -41,8 +41,9 @@ __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, 
     for (int i = 0; i < N; i++)
     {
         G = curand_normal2(&localState);
-        V = fmaxf(V + kappa * (theta - V) * dt + sigma * sqrtf(V) * sqrtf(dt) * G.x , 0.0f);
         S = S * ( 1.0f + r * dt + sqrtf(V) * sqrt(dt) * ( rho * G.x + sqrtf(1-rho*rho) * G.y ));
+        V = fmaxf(V + kappa * (theta - V) * dt + sigma * sqrtf(V) * sqrtf(dt) * G.x , 0.0f);
+        
     }
 
     payoffGPU[idx] = expf(-r * N * dt) * fmaxf(0.0f, S - K);
