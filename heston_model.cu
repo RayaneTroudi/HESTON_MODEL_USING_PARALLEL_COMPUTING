@@ -21,7 +21,7 @@ __global__ void init_curand_state_k(curandState* state) {
 
 // function to return an array that contains all the payoff at the maturity (N)
 __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
-                                float dt, int N, // parameters of the discritisation (time step and maturity)
+                                float dt, int N, // parameters of the discritisation (time step and number of time steps)
                                 float K, float S0, // paramater of the option (Strike)
                                 curandState* state, // array of seed of each thread
                                 float* payoffGPU){ // output
@@ -52,6 +52,24 @@ __global__ void MC_heston_model(float kappa, float theta, float sigma, float r, 
 
 int main(void){
 
+    // ___ INIT BLOCK ___
+    int NTPB = 512; // number of threads per block
+    int NB = 512; // number of blocks
+    int n = NB * NTPB;
+
+    float T = 1.0f; // maturity
+    float S0 = 50.0f; 
+    float K = S0; // at the money
+
+    int N = 1000;
+    float dt = 1.0f / (float) N;
+
+    float sigma = 0.3f;
+    float kappa = 0.5f;
+    float theta = 0.1f;
+
+    float *payoffGPU;
+    
 
     return 0;
 }
