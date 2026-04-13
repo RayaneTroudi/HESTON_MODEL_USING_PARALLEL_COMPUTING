@@ -11,3 +11,8 @@ void testCUDA(cudaError_t error, const char* file, int line) {
     }
 }
 
+// Init the seed for each thread that compute a path price
+__global__ void init_curand_state_k(curandState* state) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    curand_init(1234, idx, 0, &state[idx]);
+}
