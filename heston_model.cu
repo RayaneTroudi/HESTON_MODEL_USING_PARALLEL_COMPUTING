@@ -3,6 +3,8 @@
 #include <math.h>
 #include <curand_kernel.h>
 
+
+/* __________________________________________________________________________  */
 // Function that catches the error
 void testCUDA(cudaError_t error, const char* file, int line) {
     if (error != cudaSuccess) {
@@ -13,6 +15,13 @@ void testCUDA(cudaError_t error, const char* file, int line) {
 #define testCUDA(error) (testCUDA(error, __FILE__, __LINE__))
 
 
+
+
+
+
+
+
+/* __________________________________________________________________________  */
 // Init the seed for each thread that compute a path price
 __global__ void init_curand_state_k(curandState* state) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -21,6 +30,10 @@ __global__ void init_curand_state_k(curandState* state) {
 
 
 
+
+
+
+/* __________________________________________________________________________  */
 // function to return an array that contains all the payoff at the maturity (N)
 __global__ void monteCarloHestonModel(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
                                 float dt, int N, // parameters of the discritisation (time step and number of time steps)
@@ -53,6 +66,10 @@ __global__ void monteCarloHestonModel(float kappa, float theta, float sigma, flo
 }
 
 
+
+
+
+/* __________________________________________________________________________  */
 // Gamma distribution function
 __device__ float gamma_standard(float alpha, curandState* state)
 {
@@ -91,6 +108,13 @@ __device__ float gamma_standard(float alpha, curandState* state)
 }
 
 
+
+
+
+
+
+/* __________________________________________________________________________  */
+// Kernel to test the gamma distribution function
 __global__ void testGammaKernel(float alpha, curandState* states, float* out, int n)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -102,6 +126,56 @@ __global__ void testGammaKernel(float alpha, curandState* states, float* out, in
 
     states[idx] = localState;
 }
+
+
+
+
+
+/* __________________________________________________________________________  */
+__global__ void monteCarloHestonModelWithGamma(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
+                                float dt, int N, // parameters of the discritisation (time step and number of time steps)
+                                float K, // paramater of the option (Strike)
+                                curandState* state, // array of seed of each thread
+                                float* payoffGPU){ // output
+
+    // ___ INIT BLOCK ___
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;  
+    curandState localState = state[idx]; // state seed of each thread
+    float G; // G following a standard gamma distribution
+    unsigned int P; // P following a standard poisson distribution
+    float V0 = 0.1f;
+    float lambda;
+    float V_pred = V0; // init of the first value of the vol (vt)
+    float V_current = V0; // vt_dt (next step of v)
+    float d = (2.0f * kappa * theta) / (sigma * sigma); // constant
+   
+    float alpha;
+    float Vi = 0.0f;
+    float m;
+    float S;
+    float Z; 
+
+    for (int i = 0; i < N; i++)
+    {
+        lambda = (2.0f * kappa * expf(-1.0f * kappa * dt) * V_pred) / ((sigma * sigma) * (1.0f - expf(-1.0f * kappa * dt))); // parameter of poisson law
+        P =  curand_poisson(&localState, lambda);
+        alpha = d + (float) P;
+        G = gamma_standard(alpha,&localState);
+        V_current = ((sigma * sigma) * (1.0f - expf(-1.0f * kappa * dt)) * G) / (2.0f * kappa);
+        Vi += 0.5f * (V_pred + V_current)*dt;
+        V_pred = V_current;
+
+    }
+
+    m = -0.5f * Vi + rho * (1.0/sigma) * (V_current - V0 - kappa * theta + kappa * Vi);
+    Z = curand_normal(&localState);
+    S = expf(m + sqrtf((1.0f - rho*rho) * Vi)*Z);
+
+    payoffGPU[idx] = expf(-r * N * dt) * fmaxf(0.0f, S - K);
+    state[idx] = localState;
+    
+}
+
 
 
 int main(void){
@@ -181,17 +255,15 @@ int main(void){
     testCUDA(cudaFree(payoffGPU));
 
 
+
     /* ______________________________________ QUESTION 2 ______________________________________ */
 
 
-    float alpha = 2.0f;   // test alpha >= 1
-    // float alpha = 0.5f; // test alpha < 1
+    float *payoffGPU2, *payoffCPU2;
+    payoffCPU2 = (float*)malloc(n * sizeof(float));
+    testCUDA(cudaMalloc(&payoffGPU2, n * sizeof(float)));
 
-    float *gammaGPU, *gammaCPU;
-    gammaCPU = (float*)malloc(n * sizeof(float));
-    testCUDA(cudaMalloc(&gammaGPU, n * sizeof(float)));
-
-    // Re-init the RNG states if you want a clean independent test
+    // Re-init the RNG states for an independent run
     init_curand_state_k<<<NB, NTPB>>>(states);
     testCUDA(cudaGetLastError());
     testCUDA(cudaDeviceSynchronize());
@@ -201,7 +273,7 @@ int main(void){
     testCUDA(cudaEventCreate(&stop));
     testCUDA(cudaEventRecord(start, 0));
 
-    testGammaKernel<<<NB, NTPB>>>(alpha, states, gammaGPU, n);
+    monteCarloHestonModelWithGamma<<<NB, NTPB>>>(kappa, theta, sigma, r, rho, dt, N, K, states, payoffGPU2);
     testCUDA(cudaGetLastError());
 
     testCUDA(cudaEventRecord(stop, 0));
@@ -210,32 +282,23 @@ int main(void){
     testCUDA(cudaEventDestroy(start));
     testCUDA(cudaEventDestroy(stop));
 
-    testCUDA(cudaMemcpy(gammaCPU, gammaGPU, n * sizeof(float), cudaMemcpyDeviceToHost));
+    testCUDA(cudaMemcpy(payoffCPU2, payoffGPU2, n * sizeof(float), cudaMemcpyDeviceToHost));
 
-    float meanGamma = 0.0f;
-    float varGamma = 0.0f;
-
+    float sum2_q2 = 0.0f;
+    float sumSq_q2 = 0.0f;
     for (int i = 0; i < n; i++) {
-        meanGamma += gammaCPU[i];
+        sum2_q2  += payoffCPU2[i] / n;
+        sumSq_q2 += payoffCPU2[i] * payoffCPU2[i] / n;
     }
-    meanGamma /= n;
+    float stddev_q2 = sqrtf((sumSq_q2 - sum2_q2 * sum2_q2) / n);
 
-    for (int i = 0; i < n; i++) {
-        float diff = gammaCPU[i] - meanGamma;
-        varGamma += diff * diff;
-    }
-    varGamma /= n;
+    printf("\n=== Monte Carlo Heston Model with Gamma (Q2) ===\n");
+    printf("Estimated price      = %f\n", sum2_q2);
+    printf("95%% confidence interval: [%f, %f]\n", sum2_q2 - 1.96f * stddev_q2, sum2_q2 + 1.96f * stddev_q2);
+    printf("Execution time       = %f ms\n", Tim);
 
-    printf("\n=== Gamma test ===\n");
-    printf("alpha = %f\n", alpha);
-    printf("Theoretical mean     = %f\n", alpha);
-    printf("Monte Carlo mean     = %f\n", meanGamma);
-    printf("Theoretical variance = %f\n", alpha);
-    printf("Monte Carlo variance = %f\n", varGamma);
-    printf("Execution time %f ms\n", Tim);
-
-    free(gammaCPU);
-    testCUDA(cudaFree(gammaGPU));
+    free(payoffCPU2);
+    testCUDA(cudaFree(payoffGPU2));
     testCUDA(cudaFree(states));
 
     return 0;
