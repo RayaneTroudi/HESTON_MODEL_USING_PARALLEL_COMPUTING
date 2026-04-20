@@ -1,10 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <vector>
 #include <curand_kernel.h>
 
 
-/* __________________________________________________________________________  */
+/* __________________________________________________________________________________________________________________________________________  */
 // Function that catches the error
 void testCUDA(cudaError_t error, const char* file, int line) {
     if (error != cudaSuccess) {
@@ -21,7 +22,7 @@ void testCUDA(cudaError_t error, const char* file, int line) {
 
 
 
-/* __________________________________________________________________________  */
+/* __________________________________________________________________________________________________________________________________________  */
 // Init the seed for each thread that compute a path price
 __global__ void init_curand_state_k(curandState* state) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -33,7 +34,7 @@ __global__ void init_curand_state_k(curandState* state) {
 
 
 
-/* __________________________________________________________________________  */
+/* __________________________________________________________________________________________________________________________________________  */
 // function to return an array that contains all the payoff at the maturity (N)
 __global__ void monteCarloHestonModel(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
                                 float dt, int N, // parameters of the discritisation (time step and number of time steps)
@@ -68,8 +69,7 @@ __global__ void monteCarloHestonModel(float kappa, float theta, float sigma, flo
 
 
 
-
-/* __________________________________________________________________________  */
+/* __________________________________________________________________________________________________________________________________________  */
 // Gamma distribution function
 __device__ float gamma_standard(float alpha, curandState* state)
 {
@@ -113,7 +113,7 @@ __device__ float gamma_standard(float alpha, curandState* state)
 
 
 
-/* __________________________________________________________________________  */
+/* __________________________________________________________________________________________________________________________________________  */
 // Kernel to test the gamma distribution function
 __global__ void testGammaKernel(float alpha, curandState* states, float* out, int n)
 {
@@ -131,7 +131,8 @@ __global__ void testGammaKernel(float alpha, curandState* states, float* out, in
 
 
 
-/* __________________________________________________________________________  */
+
+/* __________________________________________________________________________________________________________________________________________  */
 __global__ void monteCarloHestonModelWithGamma(float kappa, float theta, float sigma, float r, float rho, // paramaters of the model
                                 float dt, int N, // parameters of the discritisation (time step and number of time steps)
                                 float K, // paramater of the option (Strike)
@@ -176,6 +177,13 @@ __global__ void monteCarloHestonModelWithGamma(float kappa, float theta, float s
     
 }
 
+
+
+
+
+
+
+/* __________________________________________________________________________________________________________________________________________  */
 __global__ void monteCarloAlmostExact(
     float kappa, float theta, float sigma, float r, float rho,
     float dt, int N,
@@ -234,6 +242,49 @@ __global__ void monteCarloAlmostExact(
     payoffGPU[idx] = expf(-r * N * dt) * fmaxf(0.0f, S - K);
     state[idx] = localState;
 }
+
+
+
+/* __________________________________________________________________________________________________________________________________________  */
+
+// definiton of the struct that contains 3 parameters of the grid used in question 3
+typedef struct {
+    float kappa;
+    float theta;
+    float sigma;
+} ParamSet;
+
+
+// function that return an array of ParamSet that contains all VALID the combination of parameters that satisfy the condition of the statement
+std::vector<ParamSet> buildValidGrid(
+    const std::vector<float>& gridKappa,
+    const std::vector<float>& gridTheta,
+    const std::vector<float>& gridSigma)
+{
+    std::vector<ParamSet> validParams;
+
+    for (float kappa : gridKappa) {
+        for (float theta : gridTheta) {
+            for (float sigma : gridSigma) {
+
+                // condition de l'énoncé
+                if (20.0f * kappa * theta > sigma * sigma) {
+                    ParamSet p;
+                    p.kappa = kappa;
+                    p.theta = theta;
+                    p.sigma = sigma;
+
+                    validParams.push_back(p);
+                }
+            }
+        }
+    }
+
+    return validParams;
+}
+
+
+
 
 int main(void){
 
