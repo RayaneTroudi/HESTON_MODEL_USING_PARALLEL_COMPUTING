@@ -284,6 +284,105 @@ std::vector<ParamSet> buildValidGrid(
 }
 
 
+/* __________________________________________________________________________________________________________________________________________  */
+
+typedef struct {
+    float kappa;
+    float theta;
+    float sigma;
+    float priceEuler;
+    float priceAlmostExact;
+    float timeEuler;
+    float timeAlmostExact;
+} BenchmarkResult;
+
+
+std::vector<BenchmarkResult> runBenchmark(
+    const std::vector<ParamSet>& params,
+    float r, float rho, float S0, float K, float T, int N,
+    int NB, int NTPB)
+{
+    int n = NB * NTPB;
+    float dt = T / (float)N;
+    std::vector<BenchmarkResult> results;
+
+    float *payoffGPU, *payoffCPU;
+    payoffCPU = (float*)malloc(n * sizeof(float));
+    testCUDA(cudaMalloc(&payoffGPU, n * sizeof(float)));
+
+    curandState *states;
+    testCUDA(cudaMalloc(&states, n * sizeof(curandState)));
+
+    cudaEvent_t start, stop;
+    testCUDA(cudaEventCreate(&start));
+    testCUDA(cudaEventCreate(&stop));
+
+    for (const ParamSet& p : params)
+    {
+        BenchmarkResult res;
+        res.kappa = p.kappa;
+        res.theta = p.theta;
+        res.sigma = p.sigma;
+
+        float sum, sumSq, tim;
+
+        // --- Euler ---
+        init_curand_state_k<<<NB, NTPB>>>(states);
+        testCUDA(cudaGetLastError());
+        testCUDA(cudaDeviceSynchronize());
+
+        testCUDA(cudaEventRecord(start, 0));
+        monteCarloHestonModel<<<NB, NTPB>>>(p.kappa, p.theta, p.sigma, r, rho, dt, N, K, S0, states, payoffGPU);
+        testCUDA(cudaGetLastError());
+        testCUDA(cudaEventRecord(stop, 0));
+        testCUDA(cudaEventSynchronize(stop));
+        testCUDA(cudaEventElapsedTime(&tim, start, stop));
+
+        testCUDA(cudaMemcpy(payoffCPU, payoffGPU, n * sizeof(float), cudaMemcpyDeviceToHost));
+        sum = 0.0f; sumSq = 0.0f;
+        for (int i = 0; i < n; i++) {
+            sum   += payoffCPU[i] / n;
+            sumSq += payoffCPU[i] * payoffCPU[i] / n;
+        }
+        res.priceEuler = sum;
+        res.timeEuler  = tim;
+
+        // --- Almost Exact ---
+        init_curand_state_k<<<NB, NTPB>>>(states);
+        testCUDA(cudaGetLastError());
+        testCUDA(cudaDeviceSynchronize());
+
+        testCUDA(cudaEventRecord(start, 0));
+        monteCarloAlmostExact<<<NB, NTPB>>>(p.kappa, p.theta, p.sigma, r, rho, dt, N, K, S0, states, payoffGPU, n);
+        testCUDA(cudaGetLastError());
+        testCUDA(cudaEventRecord(stop, 0));
+        testCUDA(cudaEventSynchronize(stop));
+        testCUDA(cudaEventElapsedTime(&tim, start, stop));
+
+        testCUDA(cudaMemcpy(payoffCPU, payoffGPU, n * sizeof(float), cudaMemcpyDeviceToHost));
+        sum = 0.0f; sumSq = 0.0f;
+        for (int i = 0; i < n; i++) {
+            sum   += payoffCPU[i] / n;
+            sumSq += payoffCPU[i] * payoffCPU[i] / n;
+        }
+        res.priceAlmostExact = sum;
+        res.timeAlmostExact  = tim;
+
+        results.push_back(res);
+    }
+
+    testCUDA(cudaEventDestroy(start));
+    testCUDA(cudaEventDestroy(stop));
+    free(payoffCPU);
+    testCUDA(cudaFree(payoffGPU));
+    testCUDA(cudaFree(states));
+
+    return results;
+}
+
+
+/* __________________________________________________________________________________________________________________________________________  */
+
 
 
 int main(void){
@@ -301,8 +400,8 @@ int main(void){
     float S0 = 1.0f; 
     float K = S0; // at the money
 
-    int N = 1000;
-    float dt = (float) T / (float) N; ;
+    float dt = 1.0f / 30.0f;
+    int N = (int)(T / dt); // N = 30
 
     float sigma = 0.3f;
     float kappa = 0.5f;
@@ -454,6 +553,37 @@ int main(void){
     free(payoffCPU3);
     testCUDA(cudaFree(payoffGPU3));
     testCUDA(cudaFree(states));
+
+
+
+    /* ______________________________________ QUESTION 3 - Benchmark ______________________________________ */
+
+
+    std::vector<float> gridKappa = {0.5f, 1.0f, 2.0f, 4.0f};
+    std::vector<float> gridTheta = {0.04f, 0.09f, 0.16f};
+    std::vector<float> gridSigma = {0.1f, 0.2f, 0.3f, 0.5f};
+
+    std::vector<ParamSet> validParams = buildValidGrid(gridKappa, gridTheta, gridSigma);
+
+    printf("\n=== Benchmark: %d valid triplets (20*kappa*theta > sigma^2) ===\n", (int)validParams.size());
+    printf("%-8s %-8s %-8s | %-12s %-12s | %-12s %-12s\n",
+           "kappa", "theta", "sigma",
+           "P_Euler", "T_Euler(ms)",
+           "P_AlmExact", "T_AlmExact(ms)");
+    printf("%-8s %-8s %-8s-+-%-12s-%-12s-+-%-12s-%-12s\n",
+           "--------","--------","--------",
+           "------------","------------",
+           "------------","------------");
+
+    std::vector<BenchmarkResult> benchResults = runBenchmark(
+        validParams, r, rho, S0, K, T, N, NB, NTPB);
+
+    for (const BenchmarkResult& res : benchResults) {
+        printf("%-8.3f %-8.3f %-8.3f | %-12.6f %-12.3f | %-12.6f %-12.3f\n",
+               res.kappa, res.theta, res.sigma,
+               res.priceEuler,       res.timeEuler,
+               res.priceAlmostExact, res.timeAlmostExact);
+    }
 
     return 0;
 }
