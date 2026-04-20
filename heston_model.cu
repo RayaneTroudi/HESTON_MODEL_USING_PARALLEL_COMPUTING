@@ -73,21 +73,23 @@ __global__ void monteCarloHestonModel(float kappa, float theta, float sigma, flo
 // Gamma distribution function
 __device__ float gamma_standard(float alpha, curandState* state)
 {
-    // Case alpha < 1:
-    // Gamma(alpha) = Gamma(alpha + 1) * U^(1/alpha)
+    // Case alpha < 1: Gamma(alpha) = Gamma(alpha+1) * U^(1/alpha)
+    // Unrolled (one level only: alpha+1 >= 1 always)
+    float scale = 1.0f;
     if (alpha < 1.0f)
     {
-        float u = curand_uniform(state);   // in (0,1]
-        return gamma_standard(alpha + 1.0f, state) * powf(u, 1.0f / alpha);
+        float u = curand_uniform(state);
+        scale = powf(u, 1.0f / alpha);
+        alpha += 1.0f;
     }
 
     // Marsaglia-Tsang for alpha >= 1
     float d = alpha - 1.0f / 3.0f;
-    float c = rsqrtf(9.0f * d);  // 1 / sqrt(9d)
+    float c = rsqrtf(9.0f * d);
 
     while (true)
     {
-        float x = curand_normal(state);   // N(0,1)
+        float x = curand_normal(state);
         float v = 1.0f + c * x;
 
         if (v <= 0.0f)
@@ -95,15 +97,13 @@ __device__ float gamma_standard(float alpha, curandState* state)
 
         v = v * v * v;
 
-        float u = curand_uniform(state);  // U(0,1)
+        float u = curand_uniform(state);
 
-        // Squeeze test
         if (u < 1.0f - 0.0331f * x * x * x * x)
-            return d * v;
+            return d * v * scale;
 
-        // Exact acceptance test
         if (logf(u) < 0.5f * x * x + d * (1.0f - v + logf(v)))
-            return d * v;
+            return d * v * scale;
     }
 }
 
@@ -176,7 +176,64 @@ __global__ void monteCarloHestonModelWithGamma(float kappa, float theta, float s
     
 }
 
+__global__ void monteCarloAlmostExact(
+    float kappa, float theta, float sigma, float r, float rho,
+    float dt, int N,
+    float K, float S0,
+    curandState* state,
+    float* payoffGPU,
+    int n)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
 
+    curandState localState = state[idx];
+
+    float Ggamma;
+    float Z;
+    unsigned int P;
+
+    float logS = logf(S0);
+
+    float k0 = (-(rho / sigma) * kappa * theta) * dt;
+    float k1 = ((rho * kappa / sigma) - 0.5f) * dt - (rho / sigma);
+    float k2 = rho / sigma;
+
+    float V0 = 0.1f;
+    float lambda;
+    float V_pred = V0;
+    float V_current = V0;
+    float d = (2.0f * kappa * theta) / (sigma * sigma);
+    float alpha;
+
+    for (int i = 0; i < N; i++)
+    {
+        lambda = (2.0f * kappa * expf(-kappa * dt) * V_pred) /
+                 ((sigma * sigma) * (1.0f - expf(-kappa * dt)));
+
+        P = curand_poisson(&localState, lambda);
+        alpha = d + (float)P;
+
+        Ggamma = gamma_standard(alpha, &localState);
+
+        V_current = ((sigma * sigma) * (1.0f - expf(-kappa * dt)) * Ggamma) / (2.0f * kappa);
+
+        Z = curand_normal(&localState);
+
+        logS = logS
+             + k0
+             + k1 * V_pred
+             + k2 * V_current
+             + sqrtf((1.0f - rho * rho) * V_pred * dt) * Z;
+
+        V_pred = V_current;
+    }
+
+    float S = expf(logS);
+
+    payoffGPU[idx] = expf(-r * N * dt) * fmaxf(0.0f, S - K);
+    state[idx] = localState;
+}
 
 int main(void){
 
@@ -299,9 +356,53 @@ int main(void){
 
     free(payoffCPU2);
     testCUDA(cudaFree(payoffGPU2));
+
+
+
+    /* ______________________________________ QUESTION 3 ______________________________________ */
+
+
+    float *payoffGPU3, *payoffCPU3;
+    payoffCPU3 = (float*)malloc(n * sizeof(float));
+    testCUDA(cudaMalloc(&payoffGPU3, n * sizeof(float)));
+
+    // Re-init the RNG states for an independent run
+    init_curand_state_k<<<NB, NTPB>>>(states);
+    testCUDA(cudaGetLastError());
+    testCUDA(cudaDeviceSynchronize());
+
+    // timer
+    testCUDA(cudaEventCreate(&start));
+    testCUDA(cudaEventCreate(&stop));
+    testCUDA(cudaEventRecord(start, 0));
+
+    monteCarloAlmostExact<<<NB, NTPB>>>(kappa, theta, sigma, r, rho, dt, N, K, S0, states, payoffGPU3, n);
+    testCUDA(cudaGetLastError());
+
+    testCUDA(cudaEventRecord(stop, 0));
+    testCUDA(cudaEventSynchronize(stop));
+    testCUDA(cudaEventElapsedTime(&Tim, start, stop));
+    testCUDA(cudaEventDestroy(start));
+    testCUDA(cudaEventDestroy(stop));
+
+    testCUDA(cudaMemcpy(payoffCPU3, payoffGPU3, n * sizeof(float), cudaMemcpyDeviceToHost));
+
+    float sum_q3 = 0.0f;
+    float sumSq_q3 = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum_q3   += payoffCPU3[i] / n;
+        sumSq_q3 += payoffCPU3[i] * payoffCPU3[i] / n;
+    }
+    float stddev_q3 = sqrtf((sumSq_q3 - sum_q3 * sum_q3) / n);
+
+    printf("\n=== Monte Carlo Almost Exact (Q3) ===\n");
+    printf("Estimated price      = %f\n", sum_q3);
+    printf("95%% confidence interval: [%f, %f]\n", sum_q3 - 1.96f * stddev_q3, sum_q3 + 1.96f * stddev_q3);
+    printf("Execution time       = %f ms\n", Tim);
+
+    free(payoffCPU3);
+    testCUDA(cudaFree(payoffGPU3));
     testCUDA(cudaFree(states));
 
     return 0;
-
-    
 }
